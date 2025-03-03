@@ -204,7 +204,6 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     application.add_handler(conv_handler)
-    application.run_polling()
 
-if __name__ == "__main__":
-    main()
+    # Start the bot
+    port = int(os.environ.get("PORT", 8443))  # Use Render's PORT or default to 8443

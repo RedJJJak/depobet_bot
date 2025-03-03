@@ -208,4 +208,4 @@ def main() -> None:
     application.add_handler(conv_handler)
 
     # Start the bot
-    port = int(os.environ.get("PORT", 8443))  # Use Render's PORT or default to 8443
+    port = int(os.environ.get("PORT", 10000))  # Use Render's PORT or default to 10000

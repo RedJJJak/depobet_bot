@@ -1,8 +1,6 @@
 import logging
 import requests
 import os
-from keep_alive import keep_alive
-keep_alive()
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
     Application,

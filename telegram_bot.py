@@ -204,3 +204,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     application.add_handler(conv_handler)
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()

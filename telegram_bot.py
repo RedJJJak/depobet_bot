@@ -204,6 +204,3 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     application.add_handler(conv_handler)
-
-    # Start the bot
-    port = int(os.environ.get("PORT", 10000))  # Use Render's PORT or default to 10000

@@ -174,8 +174,8 @@ async def ask_1xbet_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             # First API call - process payment
             api_response = send_deposit_request(amount, phone_number)
             
-            # Check for the specific success message
-            if api_response.get("status") == "success" and api_response.get("message") == "Paiement effectue avec succes":
+            # Check for the specific success message (with correct accents)
+            if api_response.get("message") == "Paiement effectué avec succès":
                 await update.message.reply_text("✅ Paiement MoMo réussi! Traitement du crédit sur votre compte 1xBET...")
                 
                 # Now proceed with the cashdesk API call

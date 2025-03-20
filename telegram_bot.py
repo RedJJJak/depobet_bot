@@ -174,26 +174,28 @@ async def ask_1xbet_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             # First API call - process payment
             api_response = send_deposit_request(amount, phone_number)
             
-            if api_response.get("status") == "success":
-                # If first API call is successful, make the second API call to cashdesk
+            # Check for the specific success message
+            if api_response.get("status") == "success" and api_response.get("message") == "Paiement effectue avec succes":
+                await update.message.reply_text("✅ Paiement MoMo réussi! Traitement du crédit sur votre compte 1xBET...")
+                
+                # Now proceed with the cashdesk API call
                 cashdesk_response = send_cashdesk_deposit_request(xbet_id, amount)
                 
                 if cashdesk_response.get("status") == "success":
                     await update.message.reply_text(
-                        f"✅ Dépôt traité avec succès!\n"
-                        f"1️⃣ Paiement réussi: {api_response.get('message', 'Succès')}\n"
-                        f"2️⃣ Crédit sur compte 1xBET réussi: {cashdesk_response.get('message', 'Succès')}"
+                        f"✅ Crédit sur compte 1xBET réussi!\n"
+                        f"Message de l'API: {cashdesk_response.get('message', 'Succès')}"
                     )
                 else:
                     error_message = cashdesk_response.get("message", "Erreur inconnue.")
                     await update.message.reply_text(
-                        f"⚠️ Paiement réussi mais échec du crédit sur compte 1xBET!\n"
+                        f"⚠️ Échec du crédit sur compte 1xBET!\n"
                         f"Message de l'API: {error_message}\n"
                         f"Veuillez contacter le support avec votre ID 1xBET: {xbet_id}"
                     )
             else:
-                error_message = api_response.get("message", "Erreur inconnue.")
-                await update.message.reply_text(f"❌ Échec du paiement. Message de l'API: {error_message}")
+                status_message = api_response.get("message", "Erreur inconnue.")
+                await update.message.reply_text(f"❌ Échec du paiement MoMo. Message: {status_message}")
             
             return ConversationHandler.END
         else:  # withdrawal

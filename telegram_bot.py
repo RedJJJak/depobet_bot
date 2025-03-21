@@ -20,12 +20,16 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 DEPOSIT_API_URL = "https://e-depobet.com/v1/public/api/process-payment"
 WITHDRAWAL_API_URL = "https://e-depobet.com/v1/public/api/transfer"
 CASHDESK_DEPOSIT_API_URL = "https://e-depobet.com/v1/public/api/cashdesk/deposit"
+CASHDESK_PAYOUT_API_URL = "https://e-depobet.com/v1/public/api/cashdesk/payout"
 
 # Telegram bot token
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# Admin phone number for withdrawal confirmations
+ADMIN_PHONE_NUMBER = "+233542169258"
+
 # States in the conversation
-ASK_PHONE, ASK_AMOUNT, ASK_1XBET_ID, ASK_WITHDRAWAL_CODE = range(4)
+ASK_PHONE, ASK_AMOUNT, ASK_1XBET_ID, ASK_WITHDRAWAL_CODE, ADMIN_CONFIRMATION = range(5)
 
 # Validators
 def validate_phone_number(phone_number: str) -> bool:
@@ -95,6 +99,25 @@ def send_cashdesk_deposit_request(user_id: str, amount: int) -> dict:
         logging.error(f"Cashdesk Deposit API request failed: {e}")
         return {"status": "error", "message": str(e)}
 
+def send_cashdesk_payout_request(user_id: str, code: str) -> dict:
+    """Send cashdesk payout request to the Laravel API."""
+    payload = {
+        "userId": user_id,
+        "code": code,
+        "language": "fr"
+    }
+
+    logging.debug(f"Sending cashdesk payout request with payload: {payload}")
+    try:
+        response = requests.post(CASHDESK_PAYOUT_API_URL, json=payload, timeout=60)
+        response.raise_for_status()
+        api_response = response.json()
+        logging.debug(f"Cashdesk Payout API response: {api_response}")
+        return api_response
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Cashdesk Payout API request failed: {e}")
+        return {"status": "error", "message": str(e)}
+
 def send_withdrawal_request(amount: int, phone_number: str) -> dict:
     """Send withdrawal request to the Laravel API."""
     if phone_number.startswith("+"):
@@ -122,6 +145,99 @@ def send_withdrawal_request(amount: int, phone_number: str) -> dict:
     except requests.exceptions.RequestException as e:
         logging.error(f"Withdrawal API request failed: {e}")
         return {"status": "error", "message": str(e)}
+
+# Admin handlers
+async def send_to_admin(context: ContextTypes.DEFAULT_TYPE, user_data: dict) -> None:
+    """Send withdrawal request to admin for confirmation."""
+    admin_message = (
+        f"🔄 Nouvelle demande de retrait:\n\n"
+        f"📱 Téléphone: {user_data['phone_number']}\n"
+        f"💰 Montant: {user_data['amount']}\n"
+        f"🆔 ID 1xBET: {user_data['xbet_id']}\n"
+        f"🔑 Code de retrait: {user_data['withdrawal_code']}\n\n"
+        f"Pour confirmer, répondez avec le code: CONFIRM-{user_data['xbet_id']}"
+    )
+    
+    # Store user chat_id in context for later use when admin confirms
+    context.bot_data["pending_withdrawal"] = {
+        "chat_id": context._user_id,
+        "data": user_data
+    }
+    
+    try:
+        await context.bot.send_message(chat_id=ADMIN_PHONE_NUMBER, text=admin_message)
+        logging.info(f"Withdrawal request sent to admin for ID {user_data['xbet_id']}")
+    except Exception as e:
+        logging.error(f"Failed to send withdrawal request to admin: {e}")
+
+async def process_admin_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Process admin confirmation for withdrawal."""
+    # Check if message is from admin
+    if update.effective_user.username != ADMIN_PHONE_NUMBER:
+        return
+    
+    # Check for confirmation code
+    message_text = update.message.text
+    if not message_text.startswith("CONFIRM-"):
+        return
+    
+    try:
+        confirmed_xbet_id = message_text.split("CONFIRM-")[1]
+        
+        # Check if there's a pending withdrawal with this ID
+        pending = context.bot_data.get("pending_withdrawal")
+        if not pending or pending["data"]["xbet_id"] != confirmed_xbet_id:
+            await update.message.reply_text("❌ Aucune demande de retrait en attente avec cet ID.")
+            return
+        
+        # Process the confirmed withdrawal
+        user_data = pending["data"]
+        chat_id = pending["chat_id"]
+        
+        # First call the cashdesk payout API
+        cashdesk_payout_response = send_cashdesk_payout_request(
+            user_data["xbet_id"], 
+            user_data["withdrawal_code"]
+        )
+        
+        if cashdesk_payout_response.get("status") == "success":
+            await update.message.reply_text(
+                f"✅ Retrait 1xBET confirmé! API: {cashdesk_payout_response.get('message', 'Succès')}"
+            )
+            
+            # Now send the MoMo withdrawal request
+            withdrawal_response = send_withdrawal_request(
+                user_data["amount"], 
+                user_data["phone_number"]
+            )
+            
+            if withdrawal_response.get("status") == "success":
+                await update.message.reply_text("✅ Retrait MoMo traité avec succès!")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="✅ Votre demande de retrait a été approuvée et traitée avec succès!"
+                )
+            else:
+                error_msg = withdrawal_response.get("message", "Erreur inconnue")
+                await update.message.reply_text(f"❌ Échec du retrait MoMo. Erreur: {error_msg}")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Retrait 1xBET réussi mais échec du transfert MoMo. Contactez le support."
+                )
+        else:
+            error_msg = cashdesk_payout_response.get("message", "Erreur inconnue")
+            await update.message.reply_text(f"❌ Échec du retrait 1xBET. Erreur: {error_msg}")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ Votre demande de retrait a été rejetée. Vérifiez vos informations et réessayez."
+            )
+        
+        # Clear the pending withdrawal
+        context.bot_data.pop("pending_withdrawal", None)
+        
+    except Exception as e:
+        logging.error(f"Error processing admin confirmation: {e}")
+        await update.message.reply_text(f"❌ Erreur lors du traitement: {str(e)}")
 
 # Handlers
 async def greet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -209,16 +325,18 @@ async def ask_withdrawal_code(update: Update, context: ContextTypes.DEFAULT_TYPE
     withdrawal_code = update.message.text
     if validate_withdrawal_code(withdrawal_code):
         context.user_data["withdrawal_code"] = withdrawal_code
-        phone_number = context.user_data["phone_number"]
-        amount = context.user_data["amount"]
-        api_response = send_withdrawal_request(amount, phone_number)
-        action_text = "Retrait"
         
-        if api_response.get("status") == "success":
-            await update.message.reply_text(f"✅ {action_text} réussi! Réponse API : {api_response.get('message', 'Succès')}")
-        else:
-            error_message = api_response.get("message", "Erreur inconnue.")
-            await update.message.reply_text(f"❌ Échec du {action_text.lower()}. Message de l'API : {error_message}")
+        # Store the current user's chat_id for admin confirmation
+        context._user_id = update.effective_chat.id
+        
+        # Send information to admin for confirmation
+        await send_to_admin(context, context.user_data)
+        
+        await update.message.reply_text(
+            "✅ Votre demande de retrait a été envoyée à l'administrateur pour validation.\n"
+            "Vous recevrez une notification dès que votre demande sera traitée."
+        )
+        
         return ConversationHandler.END
     
     await update.message.reply_text("Code de retrait invalide. Veuillez entrer un code valide (4 caractères max, lettres et chiffres).")
@@ -233,6 +351,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 def main() -> None:
     """Run the bot."""
     application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add conversation handler
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"(?i)^depobet$"), greet)],
         states={
@@ -244,6 +364,10 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     application.add_handler(conv_handler)
+    
+    # Add handler for admin confirmations
+    application.add_handler(MessageHandler(filters.Regex(r"^CONFIRM-\d+$"), process_admin_confirmation))
+    
     application.run_polling()
 
 if __name__ == "__main__":

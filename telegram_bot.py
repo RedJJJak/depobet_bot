@@ -25,8 +25,8 @@ CASHDESK_PAYOUT_API_URL = "https://e-depobet.com/v1/public/api/cashdesk/payout"
 # Telegram bot token
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Admin phone number for withdrawal confirmations
-ADMIN_PHONE_NUMBER = "+233542169258"
+# Store admin chat IDs
+ADMIN_CHAT_IDS = []
 
 # States in the conversation
 ASK_PHONE, ASK_AMOUNT, ASK_1XBET_ID, ASK_WITHDRAWAL_CODE, ADMIN_CONFIRMATION = range(5)
@@ -147,6 +147,27 @@ def send_withdrawal_request(amount: int, phone_number: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 # Admin handlers
+async def register_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Register a user as admin."""
+    chat_id = update.effective_chat.id
+    if chat_id not in ADMIN_CHAT_IDS:
+        ADMIN_CHAT_IDS.append(chat_id)
+        await update.message.reply_text("✅ Vous êtes maintenant enregistré comme administrateur.")
+    else:
+        await update.message.reply_text("Vous êtes déjà enregistré comme administrateur.")
+    
+    # Log admin registration
+    logging.info(f"Admin registered with chat_id: {chat_id}")
+
+async def list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all registered admins."""
+    if not ADMIN_CHAT_IDS:
+        await update.message.reply_text("Aucun administrateur n'est encore enregistré.")
+        return
+    
+    admin_list = "\n".join([f"- Admin ID: {chat_id}" for chat_id in ADMIN_CHAT_IDS])
+    await update.message.reply_text(f"Administrateurs enregistrés:\n{admin_list}")
+
 async def send_to_admin(context: ContextTypes.DEFAULT_TYPE, user_data: dict) -> None:
     """Send withdrawal request to admin for confirmation."""
     admin_message = (
@@ -164,16 +185,26 @@ async def send_to_admin(context: ContextTypes.DEFAULT_TYPE, user_data: dict) -> 
         "data": user_data
     }
     
-    try:
-        await context.bot.send_message(chat_id=ADMIN_PHONE_NUMBER, text=admin_message)
-        logging.info(f"Withdrawal request sent to admin for ID {user_data['xbet_id']}")
-    except Exception as e:
-        logging.error(f"Failed to send withdrawal request to admin: {e}")
+    # Send to all registered admins
+    sent = False
+    for admin_chat_id in ADMIN_CHAT_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_chat_id, text=admin_message)
+            logging.info(f"Withdrawal request sent to admin {admin_chat_id} for ID {user_data['xbet_id']}")
+            sent = True
+        except Exception as e:
+            logging.error(f"Failed to send withdrawal request to admin {admin_chat_id}: {e}")
+    
+    # If no admins registered yet
+    if not sent:
+        logging.warning("No admin registered or failed to send withdrawal notifications")
 
 async def process_admin_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Process admin confirmation for withdrawal."""
-    # Check if message is from admin
-    if update.effective_user.username != ADMIN_PHONE_NUMBER:
+    # Check if the sender is registered as an admin
+    sender_chat_id = update.effective_chat.id
+    if sender_chat_id not in ADMIN_CHAT_IDS:
+        await update.message.reply_text("❌ Vous n'êtes pas autorisé à confirmer les retraits. Contactez l'administrateur.")
         return
     
     # Check for confirmation code
@@ -329,6 +360,14 @@ async def ask_withdrawal_code(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Store the current user's chat_id for admin confirmation
         context._user_id = update.effective_chat.id
         
+        # Check if we have any admins registered
+        if not ADMIN_CHAT_IDS:
+            await update.message.reply_text(
+                "⚠️ Aucun administrateur n'est enregistré pour traiter les retraits.\n"
+                "Veuillez contacter le support technique."
+            )
+            return ConversationHandler.END
+        
         # Send information to admin for confirmation
         await send_to_admin(context, context.user_data)
         
@@ -351,6 +390,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 def main() -> None:
     """Run the bot."""
     application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add admin handlers
+    application.add_handler(CommandHandler("admin_register", register_admin))
+    application.add_handler(CommandHandler("list_admins", list_admins))
     
     # Add conversation handler
     conv_handler = ConversationHandler(

@@ -134,16 +134,36 @@ def send_withdrawal_request(amount: int, phone_number: str) -> dict:
         logging.debug(f"Withdrawal API status code: {response.status_code}")
         logging.debug(f"Withdrawal API raw response: '{response.text}'")
 
-        if response.status_code == 200 and not response.text.strip():  # Empty response with 200 OK
+        # Check for empty response with 200 OK
+        if response.status_code == 200 and not response.text.strip():
             logging.debug("Withdrawal API returned empty response with 200 OK - treating as success")
             return {"status": "success", "message": "Withdrawal processed successfully"}
         
         response.raise_for_status()
-        api_response = response.json()
-        logging.debug(f"Withdrawal API parsed response: {api_response}")
-        return api_response
+        
+        # Try to parse JSON response
+        try:
+            api_response = response.json()
+            logging.debug(f"Withdrawal API parsed response: {api_response}")
+            
+            # Check for the specific success message
+            if api_response.get("message") == "Transaction réalisée avec succès":
+                return {"status": "success", "message": api_response.get("message")}
+            
+            return api_response
+        except ValueError:
+            # If response is not JSON but contains success message text
+            if "Transaction réalisée avec succès" in response.text:
+                return {"status": "success", "message": "Transaction réalisée avec succès"}
+            else:
+                logging.warning(f"Withdrawal API returned non-JSON response: {response.text}")
+                return {"status": "error", "message": "Invalid response format from API"}
+            
     except requests.exceptions.RequestException as e:
         logging.error(f"Withdrawal API request failed: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logging.error(f"Error response status: {e.response.status_code}")
+            logging.error(f"Error response content: {e.response.text}")
         return {"status": "error", "message": str(e)}
 
 # Admin handlers
@@ -242,7 +262,7 @@ async def process_admin_confirmation(update: Update, context: ContextTypes.DEFAU
                 user_data["phone_number"]
             )
             
-            if withdrawal_response.get("status") == "success":
+            if withdrawal_response.get("status") == "success" or withdrawal_response.get("message") == "Transaction réalisée avec succès":
                 await update.message.reply_text("✅ Retrait MoMo traité avec succès!")
                 await context.bot.send_message(
                     chat_id=chat_id,
